@@ -3,7 +3,8 @@
  * Module dependencies.
  */
 
-var Emitter = require('emitter');
+var Emitter = require('emitter')
+  , reduce = require('reduce');
 
 /**
  * Root reference for iframes.
@@ -115,9 +116,9 @@ request.parseString = parseString;
 
 /**
  * Default MIME type map.
- * 
+ *
  *     superagent.types.xml = 'application/xml';
- * 
+ *
  */
 
 request.types = {
@@ -130,11 +131,11 @@ request.types = {
 
 /**
  * Default serialization map.
- * 
+ *
  *     superagent.serialize['application/xml'] = function(obj){
  *       return 'generated xml here';
  *     };
- * 
+ *
  */
 
  request.serialize = {
@@ -144,11 +145,11 @@ request.types = {
 
  /**
   * Default parsers.
-  * 
+  *
   *     superagent.parse['application/xml'] = function(str){
   *       return { object parsed from str };
   *     };
-  * 
+  *
   */
 
 request.parse = {
@@ -207,7 +208,7 @@ function type(str){
  */
 
 function params(str){
-  return str.split(/ *; */).reduce(function(obj, str){
+  return reduce(str.split(/ *; */), function(obj, str){
     var parts = str.split(/ *= */)
       , key = parts.shift()
       , val = parts.shift();
@@ -346,7 +347,9 @@ Response.prototype.setStatusProperties = function(status){
   this.ok = 2 == type;
   this.clientError = 4 == type;
   this.serverError = 5 == type;
-  this.error = 4 == type || 5 == type;
+  this.error = (4 == type || 5 == type)
+    ? this.toError()
+    : false;
 
   // sugar
   this.accepted = 202 == status;
@@ -356,6 +359,20 @@ Response.prototype.setStatusProperties = function(status){
   this.notAcceptable = 406 == status;
   this.notFound = 404 == status;
   this.forbidden = 403 == status;
+};
+
+/**
+ * Return an `Error` representative of this response.
+ *
+ * @return {Error}
+ * @api public
+ */
+
+Response.prototype.toError = function(){
+  var msg = 'got ' + this.status + ' response';
+  var err = new Error(msg);
+  err.status = this.status;
+  return err;
 };
 
 /**
@@ -375,12 +392,15 @@ request.Response = Response;
 function Request(method, url) {
   var self = this;
   Emitter.call(this);
+  this._query = this._query || [];
   this.method = method;
   this.url = url;
   this.header = {};
   this.set('X-Requested-With', 'XMLHttpRequest');
   this.on('end', function(){
-    self.callback(new Response(self.xhr));
+    var res = new Response(self.xhr);
+    if ('HEAD' == method) res.text = null;
+    self.callback(null, res);
   });
 }
 
@@ -392,7 +412,33 @@ Request.prototype = new Emitter;
 Request.prototype.constructor = Request;
 
 /**
- * Abort the request.
+ * Set timeout to `ms`.
+ *
+ * @param {Number} ms
+ * @return {Request} for chaining
+ * @api public
+ */
+
+Request.prototype.timeout = function(ms){
+  this._timeout = ms;
+  return this;
+};
+
+/**
+ * Clear previous timeout.
+ *
+ * @return {Request} for chaining
+ * @api public
+ */
+
+Request.prototype.clearTimeout = function(){
+  this._timeout = 0;
+  clearTimeout(this._timer);
+  return this;
+};
+
+/**
+ * Abort the request, and clear potential timeout.
  *
  * @return {Request}
  * @api public
@@ -400,9 +446,10 @@ Request.prototype.constructor = Request;
 
 Request.prototype.abort = function(){
   if (this.aborted) return;
-  this.xhr.abort();
-  this.emit('abort');
   this.aborted = true;
+  this.xhr.abort();
+  this.clearTimeout();
+  this.emit('abort');
   return this;
 };
 
@@ -448,7 +495,7 @@ Request.prototype.set = function(field, val){
  *        .type('xml')
  *        .send(xmlstring)
  *        .end(callback);
- *      
+ *
  *      request.post('/')
  *        .type('application/xml')
  *        .send(xmlstring)
@@ -465,19 +512,22 @@ Request.prototype.type = function(type){
 };
 
 /**
- * Add `obj` to the query-string, later formatted
- * in `.end()`.
- *
- * @param {Object} obj
- * @return {Request} for chaining
- * @api public
- */
+* Add query-string `val`.
+*
+* Examples:
+*
+*   request.get('/shoes')
+*     .query('size=10')
+*     .query({ color: 'blue' })
+*
+* @param {Object|String} val
+* @return {Request} for chaining
+* @api public
+*/
 
-Request.prototype.query = function(obj){
-  this._query = this._query || {};
-  for (var key in obj) {
-    this._query[key] = obj[key];
-  }
+Request.prototype.query = function(val){
+  if ('string' != typeof val) val = serialize(val);
+  this._query.push(val);
   return this;
 };
 
@@ -503,18 +553,18 @@ Request.prototype.query = function(obj){
  *         .type('json')
  *         .send('{"name":"tj"})
  *         .end(callback)
- *       
+ *
  *       // auto json
  *       request.post('/user')
  *         .send({ name: 'tj' })
  *         .end(callback)
- *       
+ *
  *       // manual x-www-form-urlencoded
  *       request.post('/user')
  *         .type('form')
  *         .send('name=tj')
  *         .end(callback)
- *       
+ *
  *       // auto x-www-form-urlencoded
  *       request.post('/user')
  *         .type('form')
@@ -561,6 +611,63 @@ Request.prototype.send = function(data){
 };
 
 /**
+ * Invoke the callback with `err` and `res`
+ * and handle arity check.
+ *
+ * @param {Error} err
+ * @param {Response} res
+ * @api private
+ */
+
+Request.prototype.callback = function(err, res){
+  var fn = this._callback;
+  if (2 == fn.length) return fn(err, res);
+  if (err) return this.emit('error', err);
+  fn(res);
+};
+
+/**
+ * Invoke callback with x-domain error.
+ *
+ * @api private
+ */
+
+Request.prototype.crossDomainError = function(){
+  var err = new Error('Origin is not allowed by Access-Control-Allow-Origin');
+  err.crossDomain = true;
+  this.callback(err);
+};
+
+/**
+ * Invoke callback with timeout error.
+ *
+ * @api private
+ */
+
+Request.prototype.timeoutError = function(){
+  var timeout = this._timeout;
+  var err = new Error('timeout of ' + timeout + 'ms exceeded');
+  err.timeout = timeout;
+  this.callback(err);
+};
+
+/**
+ * Enable transmission of cookies with x-domain requests.
+ *
+ * Note that for this to work the origin must not be
+ * using "Access-Control-Allow-Origin" with a wildcard,
+ * and also must set "Access-Control-Allow-Credentials"
+ * to "true".
+ *
+ * @api public
+ */
+
+Request.prototype.withCredentials = function(){
+  this._withCredentials = true;
+  return this;
+};
+
+/**
  * Initiate request, invoking callback `fn(res)`
  * with an instanceof `Response`.
  *
@@ -572,16 +679,32 @@ Request.prototype.send = function(data){
 Request.prototype.end = function(fn){
   var self = this;
   var xhr = this.xhr = getXHR();
-  var query = this._query;
+  var query = this._query.join('&');
+  var timeout = this._timeout;
   var data = this._data;
 
   // store callback
-  this.callback = fn || noop;
+  this._callback = fn || noop;
+
+  // CORS
+  if (this._withCredentials) xhr.withCredentials = true;
 
   // state change
   xhr.onreadystatechange = function(){
-    if (4 == xhr.readyState) self.emit('end');
+    if (4 != xhr.readyState) return;
+    if (0 == xhr.status) {
+      if (self.aborted) return self.timeoutError();
+      return self.crossDomainError();
+    }
+    self.emit('end');
   };
+
+  // timeout
+  if (timeout && !this._timer) {
+    this._timer = setTimeout(function(){
+      self.abort();
+    }, timeout);
+  }
 
   // querystring
   if (query) {
