@@ -1,6 +1,6 @@
 #request
 
-JavaScript HTTP request library
+HTTP request component
 
 ### Installation
 
