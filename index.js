@@ -1,10 +1,8 @@
-
 /**
  * Module dependencies.
  */
 
-var Emitter = require('emitter')
-  , reduce = require('reduce');
+var Emitter = require('emitter');
 
 /**
  * Root reference for iframes.
@@ -208,7 +206,7 @@ function type(str){
  */
 
 function params(str){
-  return reduce(str.split(/ *; */), function(obj, str){
+  return str.split(/ *; */).reduce(function(obj, str){
     var parts = str.split(/ *= */)
       , key = parts.shift()
       , val = parts.shift();
